@@ -32,6 +32,15 @@ from optparse import OptionParser, Option, OptionValueError, IndentedHelpFormatt
 from logging import debug, info, warning, error
 from distutils.spawn import find_executable
 
+def error_if_strict(*args, **kwargs):
+    "error() and exit if in strict mode, warning() if not."
+    cfg = Config()
+    if cfg and cfg.strict:
+        error(*args, **kwargs)
+        sys.exit(1)
+    else:
+        warning(*args, **kwargs)
+
 def output(message):
     sys.stdout.write(message + "\n")
     sys.stdout.flush()
@@ -334,16 +343,12 @@ def cmd_object_put(args):
         try:
             response = s3.object_put(full_name, uri_final, extra_headers, extra_label = seq_label)
         except S3UploadError, e:
-            if cfg.strict:
-                error(u"Upload of '%s' failed too many times." % full_name_orig)
-                sys.exit(1)
             error(u"Upload of '%s' failed too many times. Skipping that file." % full_name_orig)
+            error_if_strict(u"S3UploadError uploading %s: %s" % (item['full_name_unicode'], e))
             continue
         except InvalidFileError, e:
-            if cfg.strict:
-                error(u"File can not be uploaded: %s" % e)
-                sys.exit(1)
             warning(u"File can not be uploaded: %s" % e)
+            error_if_strict(u"InvalidFileError uploading %s: %s" % (item['full_name_unicode'], e))
             continue
         speed_fmt = formatSize(response["speed"], human_readable = True, floating_point = True)
         if not Config().progress_meter:
@@ -481,10 +486,7 @@ def cmd_object_get(args):
                         dst_stream.close()
                         raise ParameterError(u"File %s already exists. Use either of --force / --continue / --skip-existing or give it a new name." % destination)
             except IOError, e:
-                if cfg.strict:
-                    error(u"Problem uploading %s: %s" % (destination, e.strerror))
-                    sys.exit(1)
-                error(u"Skipping %s: %s" % (destination, e.strerror))
+                error_if_strict(u"IOError uploading %s: %s" % (destination, e.strerror))
                 continue
         try:
             response = s3.object_get(uri, dst_stream, start_position = start_position, extra_label = seq_label)
@@ -654,7 +656,7 @@ def cmd_info(args):
 
         except S3Error, e:
             if S3.codes.has_key(e.info["Code"]):
-                error(S3.codes[e.info["Code"]] % uri.bucket())
+                error_if_strict(S3.codes[e.info["Code"]] % uri.bucket())
                 return
             else:
                 raise
@@ -752,7 +754,7 @@ def cmd_sync_remote2remote(args):
                 response = s3.object_copy(src_uri, dst_uri, extra_headers)
                 output("File %(src)s copied to %(dst)s" % { "src" : src_uri, "dst" : dst_uri })
             except S3Error, e:
-                error("File %(src)s could not be copied: %(e)s" % { "src" : src_uri, "e" : e })
+                error_if_strict("File %(src)s could not be copied: %(e)s" % { "src" : src_uri, "e" : e })
         return seq
 
     # Perform the synchronization of files
@@ -867,7 +869,7 @@ def cmd_sync_remote2local(args):
                 if not dir_cache.has_key(dst_dir):
                     dir_cache[dst_dir] = Utils.mkdir_with_parents(dst_dir)
                 if dir_cache[dst_dir] == False:
-                    warning(u"%s: destination directory not writable: %s" % (file, dst_dir))
+                    error_if_strict(u"%s: destination directory not writable: %s" % (file, dst_dir))
                     continue
                 try:
                     debug(u"dst_file=%s" % unicodise(dst_file))
@@ -903,13 +905,13 @@ def cmd_sync_remote2local(args):
                         os.remove(chkptfname)
                     except: pass
                     if e.errno == errno.EEXIST:
-                        warning(u"%s exists - not overwriting" % (dst_file))
+                        error_if_strict(u"%s exists - not overwriting" % (dst_file))
                         continue
                     if e.errno in (errno.EPERM, errno.EACCES):
-                        warning(u"%s not writable: %s" % (dst_file, e.strerror))
+                        error_if_strict(u"%s not writable: %s" % (dst_file, e.strerror))
                         continue
                     if e.errno == errno.EISDIR:
-                        warning(u"%s is a directory - skipping over" % dst_file)
+                        error_if_strict(u"%s is a directory - skipping over" % dst_file)
                         continue
                     raise e
                 except KeyboardInterrupt:
@@ -917,14 +919,14 @@ def cmd_sync_remote2local(args):
                         dst_stream.close()
                         os.remove(chkptfname)
                     except: pass
-                    warning(u"Exiting after keyboard interrupt")
+                    error_if_strict(u"Exiting after keyboard interrupt")
                     return
                 except Exception, e:
                     try:
                         dst_stream.close()
                         os.remove(chkptfname)
                     except: pass
-                    error(u"%s: %s" % (file, e))
+                    error_if_strict(u"%s: %s" % (file, e))
                     continue
                 # We have to keep repeating this call because
                 # Python 2.4 doesn't support try/except/finally
@@ -934,7 +936,8 @@ def cmd_sync_remote2local(args):
                     os.remove(chkptfname)
                 except: pass
             except S3DownloadError, e:
-                error(u"%s: download failed too many times. Skipping that file." % file)
+                warning(u"%s: download failed too many times. Skipping that file." % file)
+                error_if_strict(u"S3DownloadError downloading %s: %s" % (file, e))
                 continue
             speed_fmt = formatSize(response["speed"], human_readable = True, floating_point = True)
             if not Config().progress_meter:
@@ -989,7 +992,7 @@ def local_copy(copy_pairs, destination_base):
             debug(u"Copying %s to %s" % (src_file, dst_file))
             shutil.copy2(src_file, dst_file)
         except (IOError, OSError), e:
-            warning(u'Unable to hardlink or copy files %s -> %s: %s' % (src_file, dst_file, e))
+            error_if_strict(u'Unable to hardlink or copy files %s -> %s: %s' % (src_file, dst_file, e))
             failed_copy_list[relative_file] = src_obj
     return failed_copy_list
 
@@ -1120,14 +1123,11 @@ def cmd_sync_local2remote(args):
                     response = s3.object_put(src, uri, extra_headers, extra_label = seq_label)
                 except InvalidFileError, e:
                     warning(u"File can not be uploaded: %s" % e)
-                    if cfg.strict:
-                        sys.exit(1)
+                    error_if_strict(u"InvalidFileError uploading %s: %s" % (item['full_name_unicode'], e))
                     continue
                 except S3UploadError, e:
-                    if cfg.strict:
-                        error(u"%s: upload failed too many times." % item['full_name_unicode'])
-                        sys.exit(1)
                     error(u"%s: upload failed too many times. Skipping that file." % item['full_name_unicode'])
+                    error_if_strict(u"S3UploadError uploading %s: %s" % (item['full_name_unicode'], e))
                     continue
                 speed_fmt = formatSize(response["speed"], human_readable = True, floating_point = True)
                 if not cfg.progress_meter:
@@ -1973,10 +1973,10 @@ def main():
     ## Unsupported features on Win32 platform
     if os.name == "nt":
         if cfg.preserve_attrs:
-            error(u"Option --preserve is not yet supported on MS Windows platform. Assuming --no-preserve.")
+            warning(u"Option --preserve is not yet supported on MS Windows platform. Assuming --no-preserve.")
             cfg.preserve_attrs = False
         if cfg.progress_meter:
-            error(u"Option --progress is not yet supported on MS Windows platform. Assuming --no-progress.")
+            warning(u"Option --progress is not yet supported on MS Windows platform. Assuming --no-progress.")
             cfg.progress_meter = False
 
     ## Pre-process --add-header's and put them to Config.extra_headers SortedDict()
@@ -2097,9 +2097,6 @@ def main():
     if len(args) < 1:
         error(u"Missing command. Please run with --help for more information.")
         sys.exit(1)
-
-    ## Enable strict error checking
-    cfg.update_option('strict', options.strict)
 
     ## Unicodise all remaining arguments:
     args = [unicodise(arg) for arg in args]
